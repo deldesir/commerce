@@ -1,0 +1,96 @@
+{
+  "actions": [],
+  "creation": "2026-05-03 18:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "sync_type",
+    "direction",
+    "item_code",
+    "status",
+    "column_break_1",
+    "payload",
+    "response",
+    "error"
+  ],
+  "fields": [
+    {
+      "fieldname": "sync_type",
+      "fieldtype": "Select",
+      "in_list_view": 1,
+      "label": "Sync Type",
+      "options": "product\ncategory\nprice\ninventory\nvariant\norder\nreconcile",
+      "reqd": 1
+    },
+    {
+      "fieldname": "direction",
+      "fieldtype": "Select",
+      "in_list_view": 1,
+      "label": "Direction",
+      "options": "push\npull",
+      "reqd": 1
+    },
+    {
+      "fieldname": "item_code",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Item Code"
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "in_list_view": 1,
+      "label": "Status",
+      "options": "success\nfailed",
+      "reqd": 1
+    },
+    {
+      "fieldname": "column_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "payload",
+      "fieldtype": "Code",
+      "label": "Payload",
+      "options": "JSON"
+    },
+    {
+      "fieldname": "response",
+      "fieldtype": "Code",
+      "label": "Response",
+      "options": "JSON"
+    },
+    {
+      "fieldname": "error",
+      "fieldtype": "Small Text",
+      "label": "Error"
+    }
+  ],
+  "index_web_pages_for_search": 0,
+  "is_virtual": 0,
+  "links": [],
+  "modified": "2026-05-03 18:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "IIAB Commerce",
+  "name": "Bagisto Sync Log",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+    }
+  ],
+  "sort_field": "creation",
+  "sort_order": "DESC",
+  "title_field": "item_code",
+  "autoname": "autoincrement",
+  "naming_rule": "Autoincrement"
+}

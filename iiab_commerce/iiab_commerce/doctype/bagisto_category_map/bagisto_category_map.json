@@ -1,0 +1,54 @@
+{
+  "actions": [],
+  "creation": "2026-05-03 18:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "item_group",
+    "bagisto_category_id"
+  ],
+  "fields": [
+    {
+      "fieldname": "item_group",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "label": "Item Group",
+      "options": "Item Group",
+      "reqd": 1,
+      "unique": 1
+    },
+    {
+      "fieldname": "bagisto_category_id",
+      "fieldtype": "Int",
+      "in_list_view": 1,
+      "label": "Bagisto Category ID",
+      "reqd": 1
+    }
+  ],
+  "index_web_pages_for_search": 0,
+  "is_virtual": 0,
+  "links": [],
+  "modified": "2026-05-03 18:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "IIAB Commerce",
+  "name": "Bagisto Category Map",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+    }
+  ],
+  "sort_field": "creation",
+  "sort_order": "ASC",
+  "title_field": "item_group",
+  "autoname": "field:item_group"
+}

@@ -1,0 +1,166 @@
+"""
+Product sync: Website Item → Bagisto Product.
+
+Triggered by Website Item DocEvent on_update.
+Uses direct MySQL access to Bagisto's database.
+"""
+import frappe
+from iiab_commerce.sync import client
+from iiab_commerce.sync.utils import log_sync
+from iiab_commerce.sync.category import get_bagisto_category_id_for_item
+
+
+def push_product(doc, method=None):
+    """Push a Website Item to Bagisto as a product. Runs in background."""
+    if isinstance(doc, str):
+        doc = frappe.get_doc("Website Item", doc)
+
+    frappe.enqueue(
+        _do_push_product,
+        queue="default",
+        timeout=120,
+        website_item_name=doc.name,
+    )
+
+
+def _do_push_product(website_item_name):
+    """Background job: push a single Website Item to Bagisto."""
+    try:
+        wi = frappe.get_doc("Website Item", website_item_name)
+        item = frappe.get_doc("Item", wi.item_code)
+
+        # Build the image URL
+        image_url = _resolve_image_url(wi.website_image or item.image)
+
+        # Determine product type
+        product_type = "configurable" if item.has_variants else "simple"
+
+        # Build data for product_flat
+        data = {
+            "name": wi.web_item_name or item.item_name,
+            "short_description": wi.short_description or "",
+            "description": wi.web_long_description or item.description or "",
+            "price": float(item.standard_rate or 0),
+            "weight": float(item.weight_per_unit or 1),
+            "status": 1 if wi.published else 0,
+            "visible_individually": 1,
+            "url_key": wi.route or item.item_code.lower().replace(" ", "-"),
+            "new": 1,
+            "featured": 0,
+        }
+
+        # Upsert product
+        product_id = client.upsert_product(item.item_code, product_type, data)
+
+        # Assign category if available
+        category_id = get_bagisto_category_id_for_item(item.item_code)
+        if category_id:
+            client.assign_category(product_id, category_id)
+
+        # Handle image
+        if image_url:
+            _save_product_image(product_id, image_url)
+
+        existing = client.find_product_by_sku(item.item_code)
+        action = "updated" if existing and existing.get("name") else "created"
+
+        log_sync(
+            sync_type="product",
+            direction="push",
+            item_code=item.item_code,
+            status="success",
+            payload=data,
+            response={"product_id": product_id},
+        )
+        frappe.logger("iiab_commerce").info(
+            f"Product {action}: {item.item_code} → Bagisto (id={product_id})"
+        )
+
+    except Exception as e:
+        log_sync(
+            sync_type="product",
+            direction="push",
+            item_code=website_item_name,
+            status="failed",
+            error=str(e),
+        )
+        frappe.logger("iiab_commerce").error(
+            f"Product push failed for {website_item_name}: {e}"
+        )
+
+
+def delete_product(doc, method=None):
+    """Deactivate a product in Bagisto when Website Item is trashed."""
+    if isinstance(doc, str):
+        doc = frappe.get_doc("Website Item", doc)
+
+    frappe.enqueue(
+        _do_delete_product,
+        queue="default",
+        timeout=60,
+        item_code=doc.item_code,
+    )
+
+
+def _do_delete_product(item_code):
+    """Background job: deactivate product in Bagisto."""
+    try:
+        existing = client.find_product_by_sku(item_code)
+        if existing:
+            client.deactivate_product(existing["id"])
+            log_sync(
+                sync_type="product",
+                direction="push",
+                item_code=item_code,
+                status="success",
+                payload={"action": "deactivate"},
+            )
+    except Exception as e:
+        log_sync(
+            sync_type="product",
+            direction="push",
+            item_code=item_code,
+            status="failed",
+            error=str(e),
+        )
+
+
+def _resolve_image_url(image_path):
+    """Resolve an image path to a full URL.
+
+    - External URLs (https://...) pass through unchanged.
+    - Local files (/files/...) get prefixed with the ERPNext subpath.
+    """
+    if not image_path:
+        return None
+    if image_path.startswith(("http://", "https://")):
+        return image_path
+    # Local file — build URL via nginx /erpnext/files/ path
+    return f"/erpnext{image_path}"
+
+
+def _save_product_image(product_id, image_url):
+    """Save an image URL to a Bagisto product."""
+    try:
+        db = client.get_db()
+        with db.cursor() as cursor:
+            # Check if product already has images
+            cursor.execute(
+                "SELECT id FROM product_images WHERE product_id = %s LIMIT 1",
+                (product_id,),
+            )
+            existing = cursor.fetchone()
+            if existing:
+                cursor.execute(
+                    "UPDATE product_images SET path = %s WHERE product_id = %s",
+                    (image_url, product_id),
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO product_images (product_id, path, type, position) "
+                    "VALUES (%s, %s, 'images', 0)",
+                    (product_id, image_url),
+                )
+    except Exception:
+        # Image storage is best-effort
+        pass
