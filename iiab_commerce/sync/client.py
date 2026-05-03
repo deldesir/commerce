@@ -17,6 +17,26 @@ _bagisto_conn = None
 
 BAGISTO_DB_NAME = "bagisto"
 
+# Bagisto core attribute IDs (from `attributes` table)
+# These must be populated in `product_attribute_values` for the API Platform
+# GraphQL layer to see products.
+ATTR_MAP = {
+    "sku":                  (1,  "text_value"),
+    "name":                 (2,  "text_value"),
+    "url_key":              (3,  "text_value"),
+    "new":                  (5,  "boolean_value"),
+    "featured":             (6,  "boolean_value"),
+    "visible_individually": (7,  "boolean_value"),
+    "status":               (8,  "boolean_value"),
+    "short_description":    (9,  "text_value"),
+    "description":          (10, "text_value"),
+    "price":                (11, "float_value"),
+    "weight":               (22, "text_value"),
+}
+
+# Default Shop category ID (set after first category sync or channel setup)
+DEFAULT_SHOP_CATEGORY_ID = None
+
 
 def _get_config(key, default=None):
     """Read a value from site_config.json."""
@@ -96,6 +116,9 @@ def find_category_by_name(name):
 def upsert_product(sku, product_type, data):
     """Create or update a Bagisto product.
 
+    Populates both `product_flat` (for Bagisto's Eloquent layer) and
+    `product_attribute_values` (for the API Platform GraphQL layer).
+
     Args:
         sku: Product SKU (join key)
         product_type: 'simple' or 'configurable'
@@ -127,8 +150,8 @@ def upsert_product(sku, product_type, data):
         else:
             # Create product
             cursor.execute(
-                "INSERT INTO products (sku, type, created_at, updated_at) "
-                "VALUES (%s, %s, NOW(), NOW())",
+                "INSERT INTO products (sku, type, attribute_family_id, "
+                "created_at, updated_at) VALUES (%s, %s, 1, NOW(), NOW())",
                 (sku, product_type),
             )
             product_id = cursor.lastrowid
@@ -145,7 +168,6 @@ def upsert_product(sku, product_type, data):
                 "updated_at": "NOW()",
             }
             flat_data.update(data)
-            # Remove non-flat fields
             flat_data.pop("attribute_family_id", None)
 
             cols = list(flat_data.keys())
@@ -159,7 +181,6 @@ def upsert_product(sku, product_type, data):
                     placeholders.append("%s")
                     values.append(v)
 
-            # Build the SQL with mixed placeholders
             col_str = ", ".join(f"`{c}`" for c in cols)
             ph_str = ", ".join(placeholders)
             cursor.execute(
@@ -167,7 +188,67 @@ def upsert_product(sku, product_type, data):
                 values,
             )
 
+    # Populate product_attribute_values (required for API Platform GraphQL)
+    _populate_attribute_values(product_id, sku, data)
+
+    # Assign to default Shop category
+    shop_cat_id = _get_shop_category_id()
+    if shop_cat_id:
+        assign_category(product_id, shop_cat_id)
+
     return product_id
+
+
+def _populate_attribute_values(product_id, sku, data):
+    """Populate product_attribute_values for API Platform visibility."""
+    db = get_db()
+    vals = {
+        "sku": sku,
+        "name": data.get("name", sku),
+        "url_key": data.get("url_key", sku.lower()),
+        "new": data.get("new", 1),
+        "featured": data.get("featured", 0),
+        "visible_individually": data.get("visible_individually", 1),
+        "status": data.get("status", 1),
+        "short_description": data.get("short_description", ""),
+        "description": data.get("description", ""),
+        "price": float(data.get("price", 0)),
+        "weight": str(data.get("weight", 1)),
+    }
+
+    with db.cursor() as cursor:
+        for attr_code, (attr_id, col) in ATTR_MAP.items():
+            val = vals.get(attr_code)
+            cursor.execute(
+                "DELETE FROM product_attribute_values "
+                "WHERE product_id = %s AND attribute_id = %s",
+                (product_id, attr_id),
+            )
+            if val is not None:
+                cursor.execute(
+                    f"INSERT INTO product_attribute_values "
+                    f"(product_id, attribute_id, {col}, channel, locale) "
+                    f"VALUES (%s, %s, %s, %s, %s)",
+                    (product_id, attr_id, val, "default", "en"),
+                )
+
+
+def _get_shop_category_id():
+    """Get or cache the default Shop category ID."""
+    global DEFAULT_SHOP_CATEGORY_ID
+    if DEFAULT_SHOP_CATEGORY_ID:
+        return DEFAULT_SHOP_CATEGORY_ID
+
+    cat = find_category_by_slug("shop")
+    if cat:
+        DEFAULT_SHOP_CATEGORY_ID = cat["id"]
+        return DEFAULT_SHOP_CATEGORY_ID
+
+    # Create the Shop category if it doesn't exist
+    DEFAULT_SHOP_CATEGORY_ID = upsert_category(
+        name="Shop", slug="shop", parent_id=1, description="All products"
+    )
+    return DEFAULT_SHOP_CATEGORY_ID
 
 
 def upsert_category(name, slug, parent_id=1, description="", status=1):
@@ -195,12 +276,12 @@ def upsert_category(name, slug, parent_id=1, description="", status=1):
             )
             category_id = cursor.lastrowid
 
-            # Create translation
+            # Create translation (url_path is required)
             cursor.execute(
                 "INSERT INTO category_translations "
-                "(category_id, locale, name, slug, description) "
-                "VALUES (%s, 'en', %s, %s, %s)",
-                (category_id, name, slug, description),
+                "(category_id, locale, name, slug, url_path, description) "
+                "VALUES (%s, 'en', %s, %s, %s, %s)",
+                (category_id, name, slug, slug, description),
             )
 
     return category_id
@@ -233,12 +314,18 @@ def update_inventory(product_id, qty, inventory_source_id=1):
 
 
 def update_product_price(product_id, price):
-    """Update a product's price in product_flat."""
+    """Update a product's price in product_flat and attribute_values."""
     db = get_db()
     with db.cursor() as cursor:
         cursor.execute(
             "UPDATE product_flat SET price = %s, updated_at = NOW() "
             "WHERE product_id = %s",
+            (price, product_id),
+        )
+        # Also update in product_attribute_values (attr 11 = price)
+        cursor.execute(
+            "UPDATE product_attribute_values SET float_value = %s "
+            "WHERE product_id = %s AND attribute_id = 11",
             (price, product_id),
         )
 
