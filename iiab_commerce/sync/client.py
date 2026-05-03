@@ -331,12 +331,18 @@ def update_product_price(product_id, price):
 
 
 def deactivate_product(product_id):
-    """Deactivate a product in Bagisto."""
+    """Deactivate a product in Bagisto (both product_flat and attribute_values)."""
     db = get_db()
     with db.cursor() as cursor:
         cursor.execute(
             "UPDATE product_flat SET status = 0, updated_at = NOW() "
             "WHERE product_id = %s",
+            (product_id,),
+        )
+        # Also update in product_attribute_values (attr 8 = status)
+        cursor.execute(
+            "UPDATE product_attribute_values SET boolean_value = 0 "
+            "WHERE product_id = %s AND attribute_id = 8",
             (product_id,),
         )
 

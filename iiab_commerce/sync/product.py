@@ -140,11 +140,48 @@ def _resolve_image_url(image_path):
 
 
 def _save_product_image(product_id, image_url):
-    """Save an image URL to a Bagisto product."""
+    """Download and save a product image to Bagisto's local storage.
+
+    Bagisto serves images from storage/app/public/product/{id}/.
+    External URLs are downloaded; local ERPNext paths are copied.
+    """
+    import subprocess
+    import os
+    import hashlib
+
+    STORAGE_BASE = "/library/bagisto/storage/app/public"
+
     try:
+        img_dir = f"{STORAGE_BASE}/product/{product_id}"
+        os.makedirs(img_dir, exist_ok=True)
+
+        fname = hashlib.md5(image_url.encode()).hexdigest()[:20] + ".jpg"
+        fpath = f"{img_dir}/{fname}"
+        relative_path = f"product/{product_id}/{fname}"
+
+        # Download if external URL
+        if image_url.startswith(("http://", "https://")):
+            result = subprocess.run(
+                ["curl", "-sL", "-o", fpath, "-A", "Mozilla/5.0", image_url],
+                timeout=30, capture_output=True,
+            )
+            if not os.path.exists(fpath) or os.path.getsize(fpath) < 1000:
+                return  # Download failed
+        elif image_url.startswith("/erpnext"):
+            # Local ERPNext file — copy from the site files directory
+            src = f"/home/frappe/frappe-bench/sites/site.local/public{image_url.replace('/erpnext', '')}"
+            if os.path.exists(src):
+                import shutil
+                shutil.copy2(src, fpath)
+            else:
+                return
+
+        # Set ownership
+        os.system(f"chown www-data:www-data '{fpath}' '{img_dir}'")
+
+        # Upsert into product_images
         db = client.get_db()
         with db.cursor() as cursor:
-            # Check if product already has images
             cursor.execute(
                 "SELECT id FROM product_images WHERE product_id = %s LIMIT 1",
                 (product_id,),
@@ -153,14 +190,15 @@ def _save_product_image(product_id, image_url):
             if existing:
                 cursor.execute(
                     "UPDATE product_images SET path = %s WHERE product_id = %s",
-                    (image_url, product_id),
+                    (relative_path, product_id),
                 )
             else:
                 cursor.execute(
                     "INSERT INTO product_images (product_id, path, type, position) "
                     "VALUES (%s, %s, 'images', 0)",
-                    (product_id, image_url),
+                    (product_id, relative_path),
                 )
     except Exception:
         # Image storage is best-effort
         pass
+
