@@ -37,6 +37,10 @@ def _do_push_category(item_group_name):
             parent_id = _get_bagisto_category_id(ig.parent_item_group) or 1
 
         slug = ig.name.lower().replace(" ", "-").replace("/", "-")
+        
+        logo_path = None
+        if ig.image:
+            logo_path = _download_category_image(ig.name, ig.image)
 
         category_id = client.upsert_category(
             name=ig.item_group_name,
@@ -44,6 +48,7 @@ def _do_push_category(item_group_name):
             parent_id=parent_id,
             description=ig.description or "",
             status=1,
+            logo_path=logo_path
         )
 
         # Save the mapping
@@ -72,6 +77,43 @@ def _do_push_category(item_group_name):
         frappe.logger("iiab_commerce").error(
             f"Category push failed for {item_group_name}: {e}"
         )
+
+def _download_category_image(category_name, image_url):
+    """Download category image to Bagisto local storage."""
+    import subprocess
+    import os
+    import hashlib
+
+    STORAGE_BASE = "/library/bagisto/storage/app/public"
+
+    try:
+        slug = category_name.lower().replace(" ", "-").replace("/", "-")
+        img_dir = f"{STORAGE_BASE}/category/{slug}"
+        os.makedirs(img_dir, exist_ok=True)
+
+        fname = hashlib.md5(image_url.encode()).hexdigest()[:20] + ".jpg"
+        fpath = f"{img_dir}/{fname}"
+        relative_path = f"category/{slug}/{fname}"
+
+        if image_url.startswith(("http://", "https://")):
+            subprocess.run(
+                ["curl", "-sL", "-o", fpath, "-A", "Mozilla/5.0", image_url],
+                timeout=30, capture_output=True,
+            )
+            if not os.path.exists(fpath) or os.path.getsize(fpath) < 1000:
+                return None
+        else:
+            return None # Skip internal ERPNext files for now, or copy them if needed
+
+        # Ensure files are group-readable (frappe user is in www-data group)
+        import os as _os
+        _os.chmod(img_dir, 0o775)
+        _os.chmod(fpath, 0o664)
+
+        return relative_path
+    except Exception as e:
+        frappe.logger("iiab_commerce").error(f"Category image download error: {e}")
+        return None
 
 
 def _get_bagisto_category_id(item_group_name):

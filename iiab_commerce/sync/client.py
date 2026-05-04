@@ -251,40 +251,40 @@ def _get_shop_category_id():
     return DEFAULT_SHOP_CATEGORY_ID
 
 
-def upsert_category(name, slug, parent_id=1, description="", status=1):
-    """Create or update a Bagisto category.
-
+def upsert_category(name, slug, parent_id=1, description="", status=1, logo_path=None):
+    """Create or update a Bagisto category using the PHP bootstrap script
+    to preserve nested set logic.
+    
     Returns:
         category_id (int)
     """
-    db = get_db()
-    existing = find_category_by_slug(slug)
-
-    with db.cursor() as cursor:
-        if existing:
-            category_id = existing["id"]
-            cursor.execute(
-                "UPDATE category_translations SET name = %s, description = %s "
-                "WHERE category_id = %s AND locale = 'en'",
-                (name, description, category_id),
-            )
+    import subprocess
+    import json
+    
+    payload = {
+        "name": name,
+        "slug": slug,
+        "parent_id": parent_id,
+        "description": description,
+        "status": status,
+        "logo_path": logo_path
+    }
+    
+    try:
+        result = subprocess.run(
+            ["php", "/library/bagisto/sync_category.php"],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            check=True
+        )
+        data = json.loads(result.stdout)
+        if data.get("status") == "success":
+            return data.get("category_id")
         else:
-            cursor.execute(
-                "INSERT INTO categories (parent_id, position, status, created_at, updated_at) "
-                "VALUES (%s, 0, %s, NOW(), NOW())",
-                (parent_id, status),
-            )
-            category_id = cursor.lastrowid
-
-            # Create translation (url_path is required)
-            cursor.execute(
-                "INSERT INTO category_translations "
-                "(category_id, locale, name, slug, url_path, description) "
-                "VALUES (%s, 'en', %s, %s, %s, %s)",
-                (category_id, name, slug, slug, description),
-            )
-
-    return category_id
+            raise Exception(f"Category sync failed: {data.get('message')}")
+    except subprocess.CalledProcessError as e:
+        raise Exception(f"Category sync script failed: {e.stderr or e.stdout}")
 
 
 def update_inventory(product_id, qty, inventory_source_id=1):
@@ -364,7 +364,7 @@ def assign_category(product_id, category_id):
     db = get_db()
     with db.cursor() as cursor:
         cursor.execute(
-            "SELECT id FROM product_categories "
+            "SELECT 1 FROM product_categories "
             "WHERE product_id = %s AND category_id = %s",
             (product_id, category_id),
         )

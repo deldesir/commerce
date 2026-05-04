@@ -61,32 +61,18 @@ def full_sync():
 
     # 4. Deactivate Bagisto products that are no longer published
     try:
-        page = 1
-        while True:
-            bagisto_products = client.get(
-                "catalog/products", params={"page": page, "limit": 50}
-            )
-            products = bagisto_products.get("data", [])
-            if not products:
-                break
-
-            for bp in products:
-                sku = bp.get("sku")
-                if sku and sku not in published_skus and bp.get("status"):
-                    try:
-                        client.put(f"catalog/products/{bp['id']}", {"status": 0})
-                        stats["deactivated"] += 1
-                        frappe.logger("iiab_commerce").info(
-                            f"Deactivated orphan product: {sku}"
-                        )
-                    except Exception:
-                        stats["errors"] += 1
-
-            # Check for next page
-            meta = bagisto_products.get("meta", {})
-            if page >= meta.get("last_page", 1):
-                break
-            page += 1
+        all_bagisto_products = client.get_all_products()
+        for bp in all_bagisto_products:
+            sku = bp.get("sku")
+            if sku and sku not in published_skus and bp.get("status"):
+                try:
+                    client.deactivate_product(bp["id"])
+                    stats["deactivated"] += 1
+                    frappe.logger("iiab_commerce").info(
+                        f"Deactivated orphan product: {sku}"
+                    )
+                except Exception:
+                    stats["errors"] += 1
     except Exception as e:
         frappe.logger("iiab_commerce").error(f"Deactivation sweep error: {e}")
 

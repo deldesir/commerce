@@ -176,8 +176,9 @@ def _save_product_image(product_id, image_url):
             else:
                 return
 
-        # Set ownership
-        os.system(f"chown www-data:www-data '{fpath}' '{img_dir}'")
+        # Ensure files are group-readable (frappe user is in www-data group)
+        os.chmod(img_dir, 0o775)
+        os.chmod(fpath, 0o664)
 
         # Upsert into product_images
         db = client.get_db()
