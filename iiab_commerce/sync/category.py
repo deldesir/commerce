@@ -36,18 +36,30 @@ def _do_push_category(item_group_name):
         if ig.parent_item_group and ig.parent_item_group != "All Item Groups":
             parent_id = _get_bagisto_category_id(ig.parent_item_group) or 1
 
-        slug = ig.name.lower().replace(" ", "-").replace("/", "-")
+        import re
+        slug = ig.name.lower().strip()
+        slug = slug.replace("&", "and")  # "Home & Living" → "home-and-living"
+        slug = re.sub(r"[^a-z0-9]+", "-", slug).strip("-")
         
         logo_path = None
         if ig.image:
             logo_path = _download_category_image(ig.name, ig.image)
+
+        # Determine storefront visibility: only active if explicitly enabled
+        # or if the group has published Website Items assigned to it
+        has_products = frappe.db.count(
+            "Website Item",
+            filters={"item_group": ig.name, "published": 1}
+        )
+        is_visible = ig.show_in_website or has_products > 0
+        status = 1 if is_visible else 0
 
         category_id = client.upsert_category(
             name=ig.item_group_name,
             slug=slug,
             parent_id=parent_id,
             description=ig.description or "",
-            status=1,
+            status=status,
             logo_path=logo_path
         )
 
@@ -87,7 +99,10 @@ def _download_category_image(category_name, image_url):
     STORAGE_BASE = "/library/bagisto/storage/app/public"
 
     try:
-        slug = category_name.lower().replace(" ", "-").replace("/", "-")
+        import re as _re
+        slug = category_name.lower().strip()
+        slug = slug.replace("&", "and")
+        slug = _re.sub(r"[^a-z0-9]+", "-", slug).strip("-")
         img_dir = f"{STORAGE_BASE}/category/{slug}"
         os.makedirs(img_dir, exist_ok=True)
 
@@ -102,8 +117,19 @@ def _download_category_image(category_name, image_url):
             )
             if not os.path.exists(fpath) or os.path.getsize(fpath) < 1000:
                 return None
+        elif image_url.startswith("/files/"):
+            # Local ERPNext file — copy from site public directory
+            import shutil
+            site_path = frappe.get_site_path("public", image_url.lstrip("/"))
+            if os.path.exists(site_path):
+                shutil.copy2(site_path, fpath)
+            else:
+                frappe.logger("iiab_commerce").warning(
+                    f"Category image not found on disk: {site_path}"
+                )
+                return None
         else:
-            return None # Skip internal ERPNext files for now, or copy them if needed
+            return None
 
         # Ensure files are group-readable (frappe user is in www-data group)
         import os as _os

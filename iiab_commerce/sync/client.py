@@ -32,6 +32,7 @@ ATTR_MAP = {
     "description":          (10, "text_value"),
     "price":                (11, "float_value"),
     "weight":               (22, "text_value"),
+    "manage_stock":         (28, "boolean_value"),
 }
 
 # Default Shop category ID (set after first category sync or channel setup)
@@ -196,6 +197,14 @@ def upsert_product(sku, product_type, data):
     if shop_cat_id:
         assign_category(product_id, shop_cat_id)
 
+    # Ensure product is linked to the default channel
+    # Without this, Bagisto will fail stock checks with "The requested quantity is not available"
+    with db.cursor() as cursor:
+        cursor.execute(
+            "INSERT IGNORE INTO product_channels (product_id, channel_id) VALUES (%s, 1)",
+            (product_id,)
+        )
+
     return product_id
 
 
@@ -214,6 +223,7 @@ def _populate_attribute_values(product_id, sku, data):
         "description": data.get("description", ""),
         "price": float(data.get("price", 0)),
         "weight": str(data.get("weight", 1)),
+        "manage_stock": data.get("manage_stock", 1),
     }
 
     with db.cursor() as cursor:
@@ -310,6 +320,25 @@ def update_inventory(product_id, qty, inventory_source_id=1):
                 "(product_id, inventory_source_id, qty, vendor_id) "
                 "VALUES (%s, %s, %s, 0)",
                 (product_id, inventory_source_id, qty),
+            )
+
+        # Bagisto 2.x requires the inventory index to be populated for the frontend
+        cursor.execute(
+            "SELECT id FROM product_inventory_indices WHERE product_id = %s AND channel_id = 1",
+            (product_id,)
+        )
+        if cursor.fetchone():
+            cursor.execute(
+                "UPDATE product_inventory_indices SET qty = %s "
+                "WHERE product_id = %s AND channel_id = 1",
+                (qty, product_id)
+            )
+        else:
+            cursor.execute(
+                "INSERT INTO product_inventory_indices "
+                "(product_id, channel_id, qty) "
+                "VALUES (%s, 1, %s)",
+                (product_id, qty)
             )
 
 
