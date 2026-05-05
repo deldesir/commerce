@@ -31,8 +31,8 @@ def _do_push_product(website_item_name):
         wi = frappe.get_doc("Website Item", website_item_name)
         item = frappe.get_doc("Item", wi.item_code)
 
-        # Build the image URL
-        image_url = _resolve_image_url(wi.website_image or item.image)
+        # Build the image URL — try website_image first, fall back to item.image
+        image_url = _resolve_image_url(wi.website_image) or _resolve_image_url(item.image)
 
         # Determine product type
         product_type = "configurable" if item.has_variants else "simple"
@@ -154,13 +154,18 @@ def _resolve_image_url(image_path):
     """Resolve an image path to a full URL.
 
     - External URLs (https://...) pass through unchanged.
-    - Local files (/files/...) get prefixed with the ERPNext subpath.
+    - Local files (/files/...) get verified on disk first.
+    - Returns None if file doesn't exist locally.
     """
     if not image_path:
         return None
     if image_path.startswith(("http://", "https://")):
         return image_path
-    # Local file — build URL via nginx /erpnext/files/ path
+    # Local file — verify it exists on disk before using
+    import os
+    local_path = f"/home/frappe/frappe-bench/sites/site.local/public{image_path}"
+    if not os.path.exists(local_path):
+        return None
     return f"/erpnext{image_path}"
 
 
