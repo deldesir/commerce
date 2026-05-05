@@ -8,6 +8,7 @@ import frappe
 from iiab_commerce.sync import client
 from iiab_commerce.sync.utils import log_sync
 from iiab_commerce.sync.category import get_bagisto_category_id_for_item
+import re
 
 
 def push_product(doc, method=None):
@@ -35,16 +36,32 @@ def _do_push_product(website_item_name):
         # Determine product type
         product_type = "configurable" if item.has_variants else "simple"
 
+        # Determine price: prefer Item Price (selling), fall back to standard_rate
+        price = float(item.standard_rate or 0)
+        if price == 0:
+            price_entry = frappe.db.get_value(
+                "Item Price",
+                {"item_code": item.item_code, "selling": 1},
+                "price_list_rate",
+            )
+            if price_entry:
+                price = float(price_entry)
+
+        # Build url_key: must be a flat slug (no slashes)
+        raw_key = wi.route or item.item_code
+        url_key = raw_key.rsplit("/", 1)[-1]  # take only last segment
+        url_key = re.sub(r"[^a-z0-9-]", "-", url_key.lower()).strip("-")
+
         # Build data for product_flat
         data = {
             "name": wi.web_item_name or item.item_name,
             "short_description": wi.short_description or "",
             "description": wi.web_long_description or item.description or "",
-            "price": float(item.standard_rate or 0),
+            "price": price,
             "weight": float(item.weight_per_unit or 1),
             "status": 1 if wi.published else 0,
             "visible_individually": 1,
-            "url_key": wi.route or item.item_code.lower().replace(" ", "-"),
+            "url_key": url_key,
             "new": 1,
             "featured": 0,
         }
