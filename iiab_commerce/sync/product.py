@@ -8,7 +8,6 @@ import frappe
 from iiab_commerce.sync import client
 from iiab_commerce.sync.utils import log_sync
 from iiab_commerce.sync.category import get_bagisto_category_id_for_item
-from iiab_commerce.sync.cache import invalidate_storefront
 import re
 
 
@@ -56,8 +55,8 @@ def _do_push_product(website_item_name):
         # Build data for product_flat
         data = {
             "name": wi.web_item_name or item.item_name,
-            "short_description": wi.short_description or "",
-            "description": wi.web_long_description or item.description or "",
+            "short_description": wi.short_description or item.description or "",
+            "description": wi.web_long_description or item.description or wi.short_description or "",
             "price": price,
             "weight": float(item.weight_per_unit or 1),
             "status": 1 if wi.published else 0,
@@ -79,9 +78,7 @@ def _do_push_product(website_item_name):
         if image_url:
             _save_product_image(product_id, image_url)
 
-        # Also assign to the "Shop" catch-all category so product appears
-        # in homepage carousels (which filter by Shop category)
-        _assign_shop_category(product_id)
+        # Note: Shop category assignment is handled by client.upsert_product()
 
         existing = client.find_product_by_sku(item.item_code)
         action = "updated" if existing and existing.get("name") else "created"
@@ -97,9 +94,6 @@ def _do_push_product(website_item_name):
         frappe.logger("iiab_commerce").info(
             f"Product {action}: {item.item_code} → Bagisto (id={product_id})"
         )
-
-        # Purge storefront cache so new product appears immediately
-        invalidate_storefront()
 
     except Exception as e:
         log_sync(
@@ -163,7 +157,7 @@ def _resolve_image_url(image_path):
         return image_path
     # Local file — verify it exists on disk before using
     import os
-    local_path = f"/home/frappe/frappe-bench/sites/site.local/public{image_path}"
+    local_path = frappe.get_site_path("public", image_path.lstrip("/"))
     if not os.path.exists(local_path):
         return None
     return f"/erpnext{image_path}"
@@ -212,7 +206,7 @@ def _save_product_image(product_id, image_url):
                 return  # Download failed
         elif image_url.startswith("/erpnext"):
             # Local ERPNext file — copy from the site files directory
-            src = f"/home/frappe/frappe-bench/sites/site.local/public{image_url.replace('/erpnext', '')}"
+            src = frappe.get_site_path("public", image_url.replace("/erpnext/", ""))
             if os.path.exists(src):
                 import shutil
                 shutil.copy2(src, fpath)
@@ -247,31 +241,4 @@ def _save_product_image(product_id, image_url):
         pass
 
 
-def _assign_shop_category(product_id):
-    """Ensure a product is assigned to the 'Shop' catch-all category.
-
-    The homepage product carousels filter by this category. Without this
-    assignment, products would only appear in their Item Group category
-    page but not on the homepage.
-    """
-    try:
-        db = client.get_db()
-        with db.cursor() as cursor:
-            # Find the Shop category by slug
-            cursor.execute(
-                "SELECT ct.category_id FROM category_translations ct "
-                "WHERE ct.slug = 'shop' LIMIT 1"
-            )
-            row = cursor.fetchone()
-            if not row:
-                return
-            shop_id = row["category_id"] if isinstance(row, dict) else row[0]
-            # Idempotent insert
-            cursor.execute(
-                "INSERT IGNORE INTO product_categories (product_id, category_id) "
-                "VALUES (%s, %s)",
-                (product_id, shop_id),
-            )
-    except Exception:
-        pass
 

@@ -9,6 +9,7 @@ from iiab_commerce.sync import client
 from iiab_commerce.sync.product import _do_push_product
 from iiab_commerce.sync.inventory import _do_push_stock
 from iiab_commerce.sync.category import _do_push_category
+from iiab_commerce.sync.cache import invalidate_storefront
 from iiab_commerce.sync.utils import log_sync
 
 
@@ -85,4 +86,10 @@ def full_sync():
     frappe.logger("iiab_commerce").info(
         f"Reconciliation complete: {stats}"
     )
+
+    # Invalidate storefront cache once for all changes
+    if stats["products"] > 0 or stats["categories"] > 0 or stats["deactivated"] > 0:
+        invalidate_storefront()
+        frappe.logger("iiab_commerce").info("Storefront cache invalidated")
+
     return stats

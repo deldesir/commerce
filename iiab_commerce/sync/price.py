@@ -7,6 +7,7 @@ Only syncs prices from the "Standard Selling" price list.
 import frappe
 from iiab_commerce.sync import client
 from iiab_commerce.sync.utils import log_sync
+from iiab_commerce.sync.cache import invalidate_storefront
 
 # Only sync from selling price lists
 SELLING_PRICE_LISTS = ["Standard Selling", "Standard Selling (HTG)"]
@@ -52,6 +53,9 @@ def _do_push_price(item_code, price_rate):
         frappe.logger("iiab_commerce").info(
             f"Price updated: {item_code} → {price_rate} HTG"
         )
+
+        # Invalidate storefront cache so new price appears immediately
+        invalidate_storefront()
 
     except Exception as e:
         log_sync(

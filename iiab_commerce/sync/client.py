@@ -205,6 +205,10 @@ def upsert_product(sku, product_type, data):
             (product_id,)
         )
 
+    # Populate product_price_indices (required for cart/checkout to work)
+    price = float(data.get("price", 0))
+    _upsert_price_index(product_id, price)
+
     return product_id
 
 
@@ -343,7 +347,7 @@ def update_inventory(product_id, qty, inventory_source_id=1):
 
 
 def update_product_price(product_id, price):
-    """Update a product's price in product_flat and attribute_values."""
+    """Update a product's price in product_flat, attribute_values, and price index."""
     db = get_db()
     with db.cursor() as cursor:
         cursor.execute(
@@ -357,21 +361,38 @@ def update_product_price(product_id, price):
             "WHERE product_id = %s AND attribute_id = 11",
             (price, product_id),
         )
+    # Keep price index in sync (required for cart/checkout)
+    _upsert_price_index(product_id, price)
 
 
 def deactivate_product(product_id):
-    """Deactivate a product in Bagisto (both product_flat and attribute_values)."""
+    """Deactivate a product in Bagisto.
+
+    Sets status=0, hides from individual browsing, and removes
+    category links so it disappears from carousels and search.
+    """
     db = get_db()
     with db.cursor() as cursor:
         cursor.execute(
-            "UPDATE product_flat SET status = 0, updated_at = NOW() "
-            "WHERE product_id = %s",
+            "UPDATE product_flat SET status = 0, visible_individually = 0, "
+            "updated_at = NOW() WHERE product_id = %s",
             (product_id,),
         )
-        # Also update in product_attribute_values (attr 8 = status)
+        # Update status in product_attribute_values (attr 8 = status)
         cursor.execute(
             "UPDATE product_attribute_values SET boolean_value = 0 "
             "WHERE product_id = %s AND attribute_id = 8",
+            (product_id,),
+        )
+        # Hide from individual browsing (attr 7 = visible_individually)
+        cursor.execute(
+            "UPDATE product_attribute_values SET boolean_value = 0 "
+            "WHERE product_id = %s AND attribute_id = 7",
+            (product_id,),
+        )
+        # Remove from all categories so it disappears from carousels
+        cursor.execute(
+            "DELETE FROM product_categories WHERE product_id = %s",
             (product_id,),
         )
 
@@ -402,4 +423,37 @@ def assign_category(product_id, category_id):
                 "INSERT INTO product_categories (product_id, category_id) "
                 "VALUES (%s, %s)",
                 (product_id, category_id),
+            )
+
+
+def _upsert_price_index(product_id, price):
+    """Populate product_price_indices for Bagisto cart/checkout.
+
+    Without this table populated, 'Add to Cart' fails and price
+    filtering/sorting in the storefront breaks.
+    """
+    price = float(price or 0)
+    db = get_db()
+    with db.cursor() as cursor:
+        cursor.execute(
+            "SELECT id FROM product_price_indices "
+            "WHERE product_id = %s AND channel_id = 1 AND customer_group_id IS NULL",
+            (product_id,),
+        )
+        if cursor.fetchone():
+            cursor.execute(
+                "UPDATE product_price_indices "
+                "SET min_price = %s, regular_min_price = %s, "
+                "max_price = %s, regular_max_price = %s, updated_at = NOW() "
+                "WHERE product_id = %s AND channel_id = 1 AND customer_group_id IS NULL",
+                (price, price, price, price, product_id),
+            )
+        else:
+            cursor.execute(
+                "INSERT INTO product_price_indices "
+                "(product_id, customer_group_id, channel_id, "
+                "min_price, regular_min_price, max_price, regular_max_price, "
+                "created_at, updated_at) "
+                "VALUES (%s, NULL, 1, %s, %s, %s, %s, NOW(), NOW())",
+                (product_id, price, price, price, price),
             )

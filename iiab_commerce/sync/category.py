@@ -95,7 +95,8 @@ def _download_category_image(category_name, image_url):
     """Download category image to Bagisto local storage."""
     import subprocess
     import os
-    import hashlib
+    import time
+    import glob
 
     STORAGE_BASE = "/library/bagisto/storage/app/public"
 
@@ -107,7 +108,18 @@ def _download_category_image(category_name, image_url):
         img_dir = f"{STORAGE_BASE}/category/{slug}"
         os.makedirs(img_dir, exist_ok=True)
 
-        fname = hashlib.md5(image_url.encode()).hexdigest()[:20] + ".jpg"
+        # Clear old images (ensures replacements propagate)
+        for old in glob.glob(f"{img_dir}/*"):
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+
+        # Timestamp-based filename defeats browser/CDN cache
+        ext = os.path.splitext(image_url)[-1] or ".jpg"
+        if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+            ext = ".jpg"
+        fname = f"{int(time.time())}{ext}"
         fpath = f"{img_dir}/{fname}"
         relative_path = f"category/{slug}/{fname}"
 
@@ -133,9 +145,8 @@ def _download_category_image(category_name, image_url):
             return None
 
         # Ensure files are group-readable (frappe user is in www-data group)
-        import os as _os
-        _os.chmod(img_dir, 0o775)
-        _os.chmod(fpath, 0o664)
+        os.chmod(img_dir, 0o775)
+        os.chmod(fpath, 0o664)
 
         return relative_path
     except Exception as e:
