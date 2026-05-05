@@ -169,10 +169,12 @@ def _save_product_image(product_id, image_url):
 
     Bagisto serves images from storage/app/public/product/{id}/.
     External URLs are downloaded; local ERPNext paths are copied.
+    Always overwrites to ensure image replacements propagate.
     """
     import subprocess
     import os
-    import hashlib
+    import time
+    import glob
 
     STORAGE_BASE = "/library/bagisto/storage/app/public"
 
@@ -180,13 +182,24 @@ def _save_product_image(product_id, image_url):
         img_dir = f"{STORAGE_BASE}/product/{product_id}"
         os.makedirs(img_dir, exist_ok=True)
 
-        fname = hashlib.md5(image_url.encode()).hexdigest()[:20] + ".jpg"
+        # Clear old images for this product (ensures replacements propagate)
+        for old in glob.glob(f"{img_dir}/*"):
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+
+        # Use timestamp so filename is always fresh (defeats browser/CDN cache)
+        ext = os.path.splitext(image_url)[-1] or ".jpg"
+        if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+            ext = ".jpg"
+        fname = f"{int(time.time())}{ext}"
         fpath = f"{img_dir}/{fname}"
         relative_path = f"product/{product_id}/{fname}"
 
         # Download if external URL
         if image_url.startswith(("http://", "https://")):
-            result = subprocess.run(
+            subprocess.run(
                 ["curl", "-sL", "-o", fpath, "-A", "Mozilla/5.0", image_url],
                 timeout=30, capture_output=True,
             )
@@ -205,7 +218,7 @@ def _save_product_image(product_id, image_url):
         os.chmod(img_dir, 0o775)
         os.chmod(fpath, 0o664)
 
-        # Upsert into product_images
+        # Upsert into product_images (always update path for fresh URL)
         db = client.get_db()
         with db.cursor() as cursor:
             cursor.execute(
