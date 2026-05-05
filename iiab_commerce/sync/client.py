@@ -114,6 +114,129 @@ def find_category_by_name(name):
         return cursor.fetchone()
 
 
+def ensure_attribute_and_option(attribute_name, option_value):
+    """Ensure a Bagisto attribute and attribute_option exists for a variant.
+
+    Args:
+        attribute_name (str): The ERPNext variant attribute name (e.g. 'Size', 'Color').
+        option_value (str): The specific value (e.g. 'Large', 'Red').
+
+    Returns:
+        tuple: (attribute_id, attribute_option_id)
+    """
+    db = get_db()
+    code = attribute_name.lower().replace(" ", "_")
+
+    with db.cursor() as cursor:
+        # 1. Ensure attribute exists
+        cursor.execute("SELECT id FROM attributes WHERE code = %s", (code,))
+        attr = cursor.fetchone()
+
+        if attr:
+            attr_id = attr["id"]
+        else:
+            # Create attribute
+            cursor.execute(
+                "INSERT INTO attributes (code, admin_name, type, is_required, is_unique, "
+                "is_filterable, is_configurable, is_user_defined, is_visible_on_front, "
+                "value_per_locale, value_per_channel, enable_wysiwyg, created_at, updated_at) "
+                "VALUES (%s, %s, 'select', 0, 0, 1, 1, 1, 1, 0, 0, 0, NOW(), NOW())",
+                (code, attribute_name)
+            )
+            attr_id = cursor.lastrowid
+
+            # Create attribute translation
+            cursor.execute(
+                "INSERT INTO attribute_translations (attribute_id, locale, name) VALUES (%s, 'en', %s)",
+                (attr_id, attribute_name)
+            )
+
+            # Map to Default attribute family (id 1), group General (id 1)
+            cursor.execute(
+                "SELECT COALESCE(MAX(position), 0) + 1 AS next_pos FROM attribute_group_mappings "
+                "WHERE attribute_group_id = 1"
+            )
+            pos = cursor.fetchone()["next_pos"]
+            cursor.execute(
+                "INSERT INTO attribute_group_mappings (attribute_id, attribute_group_id, position) "
+                "VALUES (%s, 1, %s)",
+                (attr_id, pos)
+            )
+
+        # 2. Ensure option exists
+        cursor.execute(
+            "SELECT o.id FROM attribute_options o "
+            "JOIN attribute_option_translations t ON o.id = t.attribute_option_id "
+            "WHERE o.attribute_id = %s AND t.label = %s",
+            (attr_id, option_value)
+        )
+        opt = cursor.fetchone()
+
+        if opt:
+            opt_id = opt["id"]
+        else:
+            # Create option
+            cursor.execute(
+                "SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_sort FROM attribute_options "
+                "WHERE attribute_id = %s",
+                (attr_id,)
+            )
+            sort_order = cursor.fetchone()["next_sort"]
+            
+            cursor.execute(
+                "INSERT INTO attribute_options (attribute_id, admin_name, sort_order) "
+                "VALUES (%s, %s, %s)",
+                (attr_id, option_value, sort_order)
+            )
+            opt_id = cursor.lastrowid
+
+            # Create option translation
+            cursor.execute(
+                "INSERT INTO attribute_option_translations (attribute_option_id, locale, label) "
+                "VALUES (%s, 'en', %s)",
+                (opt_id, option_value)
+            )
+
+        db.commit()
+        return attr_id, opt_id
+
+
+def link_variant_to_parent(parent_id, child_id, attr_id, opt_id):
+    """Link a simple variant product to its configurable parent.
+
+    Args:
+        parent_id (int): Bagisto product ID of the configurable parent.
+        child_id (int): Bagisto product ID of the simple variant.
+        attr_id (int): Bagisto attribute ID.
+        opt_id (int): Bagisto attribute option ID.
+    """
+    db = get_db()
+    with db.cursor() as cursor:
+        # Link in product_relations
+        cursor.execute(
+            "INSERT IGNORE INTO product_relations (parent_id, child_id) VALUES (%s, %s)",
+            (parent_id, child_id)
+        )
+        
+        # Link super attribute to parent
+        cursor.execute(
+            "INSERT IGNORE INTO product_super_attributes (product_id, attribute_id) VALUES (%s, %s)",
+            (parent_id, attr_id)
+        )
+
+        # Set the variant's attribute value
+        cursor.execute(
+            "DELETE FROM product_attribute_values WHERE product_id = %s AND attribute_id = %s",
+            (child_id, attr_id)
+        )
+        cursor.execute(
+            "INSERT INTO product_attribute_values (product_id, attribute_id, integer_value, channel, locale) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (child_id, attr_id, opt_id, 'default', 'en')
+        )
+    db.commit()
+
+
 def upsert_product(sku, product_type, data):
     """Create or update a Bagisto product.
 

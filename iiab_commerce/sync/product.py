@@ -30,8 +30,24 @@ def _do_push_product(website_item_name):
         wi = frappe.get_doc("Website Item", website_item_name)
         item = frappe.get_doc("Item", wi.item_code)
 
-        # Build the image URL — try website_image first, fall back to item.image
-        image_url = _resolve_image_url(wi.website_image) or _resolve_image_url(item.image)
+        # Build the image URLs — try slideshow first, then website_image, then item.image
+        image_urls = []
+        if wi.slideshow:
+            slideshow_items = frappe.get_all(
+                "Website Slideshow Item",
+                filters={"parent": wi.slideshow},
+                fields=["image"],
+                order_by="idx asc"
+            )
+            for s in slideshow_items:
+                url = _resolve_image_url(s.image)
+                if url:
+                    image_urls.append(url)
+
+        if not image_urls:
+            fallback = _resolve_image_url(wi.website_image) or _resolve_image_url(item.image)
+            if fallback:
+                image_urls.append(fallback)
 
         # Determine product type
         product_type = "configurable" if item.has_variants else "simple"
@@ -74,9 +90,9 @@ def _do_push_product(website_item_name):
         if category_id:
             client.assign_category(product_id, category_id)
 
-        # Handle image
-        if image_url:
-            _save_product_image(product_id, image_url)
+        # Handle images
+        if image_urls:
+            _save_product_images(product_id, image_urls)
 
         # Note: Shop category assignment is handled by client.upsert_product()
 
@@ -163,15 +179,15 @@ def _resolve_image_url(image_path):
     return f"/erpnext{image_path}"
 
 
-def _save_product_image(product_id, image_url):
-    """Download and save a product image to Bagisto's local storage.
+def _save_product_images(product_id, image_urls):
+    """Download and save product images to Bagisto's local storage.
 
     Bagisto serves images from storage/app/public/product/{id}/.
     External URLs are downloaded; local ERPNext paths are copied.
     Always overwrites to ensure image replacements propagate.
 
-    Uses a stable filename (main.ext) so the URL path never changes.
-    This prevents 404s when the Bagisto GraphQL cache holds a stale path.
+    Uses a stable filename (main.ext) for the first image, and
+    image-1.ext, image-2.ext for subsequent images.
     """
     import subprocess
     import os
@@ -183,69 +199,73 @@ def _save_product_image(product_id, image_url):
         img_dir = f"{STORAGE_BASE}/product/{product_id}"
         os.makedirs(img_dir, exist_ok=True)
 
-        # Determine extension from source
-        ext = os.path.splitext(image_url)[-1] or ".jpg"
-        if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
-            ext = ".jpg"
-
-        # Use a STABLE filename — the URL path never changes, preventing
-        # 404s when Bagisto/GraphQL caches the old path between syncs.
-        fname = f"main{ext}"
-        fpath = f"{img_dir}/{fname}"
-        relative_path = f"product/{product_id}/{fname}"
-
-        # Download if external URL
-        if image_url.startswith(("http://", "https://")):
-            subprocess.run(
-                ["curl", "-sL", "-o", fpath, "-A", "Mozilla/5.0", image_url],
-                timeout=30, capture_output=True,
+        # Clear existing images in DB for this product to prevent orphaned DB entries
+        db = client.get_db()
+        with db.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM product_images WHERE product_id = %s",
+                (product_id,)
             )
-            if not os.path.exists(fpath) or os.path.getsize(fpath) < 1000:
-                return  # Download failed
-        elif image_url.startswith("/erpnext"):
-            # Local ERPNext file — copy from the site files directory
-            src = frappe.get_site_path("public", image_url.replace("/erpnext/", ""))
-            if os.path.exists(src):
-                import shutil
-                shutil.copy2(src, fpath)
-            else:
-                return
 
-        # Clean up any old timestamp-named files (from previous sync logic)
+        for idx, image_url in enumerate(image_urls):
+            # Determine extension from source
+            ext = os.path.splitext(image_url)[-1] or ".jpg"
+            if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+                ext = ".jpg"
+
+            fname = f"main{ext}" if idx == 0 else f"image-{idx}{ext}"
+            fpath = f"{img_dir}/{fname}"
+            relative_path = f"product/{product_id}/{fname}"
+
+            # Download if external URL
+            if image_url.startswith(("http://", "https://")):
+                subprocess.run(
+                    ["curl", "-sL", "-o", fpath, "-A", "Mozilla/5.0", image_url],
+                    timeout=30, capture_output=True,
+                )
+                if not os.path.exists(fpath) or os.path.getsize(fpath) < 1000:
+                    continue  # Download failed
+            elif image_url.startswith("/erpnext"):
+                # Local ERPNext file — copy from the site files directory
+                src = frappe.get_site_path("public", image_url.replace("/erpnext/", ""))
+                if os.path.exists(src):
+                    import shutil
+                    shutil.copy2(src, fpath)
+                else:
+                    continue
+
+            # Ensure files are group-readable (frappe user is in www-data group)
+            os.chmod(img_dir, 0o775)
+            os.chmod(fpath, 0o664)
+
+            # Insert into product_images
+            with db.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO product_images (product_id, path, type, position) "
+                    "VALUES (%s, %s, 'images', %s)",
+                    (product_id, relative_path, idx),
+                )
+
+        db.commit()
+
+        # Clean up any old files from previous sync logic that aren't mapped anymore
         import glob
+        expected_files = []
+        for i, u in enumerate(image_urls):
+            ext = os.path.splitext(u)[-1] or '.jpg'
+            if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+                ext = ".jpg"
+            expected_files.append(f"main{ext}" if i == 0 else f"image-{i}{ext}")
+            
         for old_file in glob.glob(f"{img_dir}/*"):
-            if os.path.basename(old_file) != fname:
+            if os.path.basename(old_file) not in expected_files:
                 try:
                     os.remove(old_file)
                 except OSError:
                     pass
 
-        # Ensure files are group-readable (frappe user is in www-data group)
-        os.chmod(img_dir, 0o775)
-        os.chmod(fpath, 0o664)
-
-        # Upsert into product_images (stable path, never changes)
-        db = client.get_db()
-        with db.cursor() as cursor:
-            cursor.execute(
-                "SELECT id FROM product_images WHERE product_id = %s LIMIT 1",
-                (product_id,),
-            )
-            existing = cursor.fetchone()
-            if existing:
-                cursor.execute(
-                    "UPDATE product_images SET path = %s WHERE product_id = %s",
-                    (relative_path, product_id),
-                )
-            else:
-                cursor.execute(
-                    "INSERT INTO product_images (product_id, path, type, position) "
-                    "VALUES (%s, %s, 'images', 0)",
-                    (product_id, relative_path),
-                )
-    except Exception:
-        # Image storage is best-effort
-        pass
+    except Exception as e:
+        frappe.logger("iiab_commerce").error(f"Failed to save images for product {product_id}: {e}")
 
 
 
