@@ -20,7 +20,7 @@ import urllib.request
 import json
 
 STOREFRONT_CACHE_DIR = "/library/nextjs-commerce/.next/cache/fetch-cache"
-STOREFRONT_BASE_URL = "http://127.0.0.1:3000"
+STOREFRONT_BASE_URL = "http://127.0.0.1:3001/live"
 REVALIDATION_SECRET = "iiab-commerce-sync"
 
 # Bagisto cache directories that must exist after clearing
