@@ -8,6 +8,7 @@ import frappe
 from iiab_commerce.sync import client
 from iiab_commerce.sync.utils import log_sync
 from iiab_commerce.sync.category import get_bagisto_category_id_for_item
+from iiab_commerce.sync.cache import invalidate_storefront
 import re
 
 
@@ -78,6 +79,10 @@ def _do_push_product(website_item_name):
         if image_url:
             _save_product_image(product_id, image_url)
 
+        # Also assign to the "Shop" catch-all category so product appears
+        # in homepage carousels (which filter by Shop category)
+        _assign_shop_category(product_id)
+
         existing = client.find_product_by_sku(item.item_code)
         action = "updated" if existing and existing.get("name") else "created"
 
@@ -92,6 +97,9 @@ def _do_push_product(website_item_name):
         frappe.logger("iiab_commerce").info(
             f"Product {action}: {item.item_code} → Bagisto (id={product_id})"
         )
+
+        # Purge storefront cache so new product appears immediately
+        invalidate_storefront()
 
     except Exception as e:
         log_sync(
@@ -218,5 +226,34 @@ def _save_product_image(product_id, image_url):
                 )
     except Exception:
         # Image storage is best-effort
+        pass
+
+
+def _assign_shop_category(product_id):
+    """Ensure a product is assigned to the 'Shop' catch-all category.
+
+    The homepage product carousels filter by this category. Without this
+    assignment, products would only appear in their Item Group category
+    page but not on the homepage.
+    """
+    try:
+        db = client.get_db()
+        with db.cursor() as cursor:
+            # Find the Shop category by slug
+            cursor.execute(
+                "SELECT ct.category_id FROM category_translations ct "
+                "WHERE ct.slug = 'shop' LIMIT 1"
+            )
+            row = cursor.fetchone()
+            if not row:
+                return
+            shop_id = row["category_id"] if isinstance(row, dict) else row[0]
+            # Idempotent insert
+            cursor.execute(
+                "INSERT IGNORE INTO product_categories (product_id, category_id) "
+                "VALUES (%s, %s)",
+                (product_id, shop_id),
+            )
+    except Exception:
         pass
 

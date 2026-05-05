@@ -45,8 +45,15 @@ def _do_push_category(item_group_name):
         if ig.image:
             logo_path = _download_category_image(ig.name, ig.image)
 
-        # Synced categories are always enabled — admin can disable in Bagisto
-        status = 1
+        # Only show categories in storefront if the ERPNext Item Group is
+        # explicitly marked for website display or has published products.
+        # This prevents internal ERPNext groups (Raw Material, Services, etc.)
+        # from polluting the storefront navigation.
+        has_products = frappe.db.count(
+            "Website Item",
+            filters={"item_group": ig.name, "published": 1}
+        )
+        status = 1 if (ig.show_in_website or has_products > 0) else 0
 
         category_id = client.upsert_category(
             name=ig.item_group_name,
