@@ -5,8 +5,9 @@ After a product or category sync, purge Next.js caches so the
 storefront picks up changes without waiting for the revalidation timer.
 
 Two strategies are used:
-1. HTTP call to the Next.js revalidation API (tag-based invalidation)
-2. Purge the on-disk fetch-cache as a fallback
+1. Purge the Bagisto PHP application cache (so GraphQL returns fresh data)
+2. Purge the Next.js on-disk fetch cache
+3. HTTP call to the Next.js revalidation API (tag-based ISR invalidation)
 
 This module is designed to be called once after a batch of syncs
 (e.g. at the end of full_sync), NOT after every individual product.
@@ -14,6 +15,7 @@ Individual sync modules should NOT call invalidate_storefront() directly.
 """
 import os
 import shutil
+import subprocess
 import urllib.request
 import json
 
@@ -21,16 +23,52 @@ STOREFRONT_CACHE_DIR = "/library/nextjs-commerce/.next/cache/fetch-cache"
 STOREFRONT_BASE_URL = "http://127.0.0.1:3000"
 REVALIDATION_SECRET = "iiab-commerce-sync"
 
+# Bagisto cache directories that must exist after clearing
+BAGISTO_CACHE_DIRS = [
+    "/library/bagisto/storage/framework/cache/data",
+    "/library/bagisto/storage/framework/sessions",
+    "/library/bagisto/storage/framework/views",
+    "/library/bagisto/bootstrap/cache",
+]
+
 
 def invalidate_storefront():
-    """Invalidate the Next.js storefront caches.
+    """Invalidate all caches so the storefront reflects the latest data.
 
-    Uses the built-in revalidation API endpoint to trigger ISR
-    revalidation, then clears the fetch cache on disk as a fallback.
-    Does NOT restart the service — that causes downtime.
+    1. Clears Bagisto PHP cache (GraphQL responses cached by Laravel)
+    2. Purges Next.js fetch-cache on disk
+    3. Calls the Next.js revalidation API endpoint
     """
-    _call_revalidation_api("products/update")
+    _clear_bagisto_cache()
     _purge_fetch_cache()
+    _call_revalidation_api("products/update")
+
+
+def _clear_bagisto_cache():
+    """Clear Bagisto's Laravel application cache.
+
+    Uses `php artisan cache:clear` but ensures the directory
+    structure is recreated afterward (artisan sometimes deletes
+    subdirectories which breaks subsequent requests).
+    """
+    try:
+        subprocess.run(
+            ["php", "artisan", "cache:clear"],
+            cwd="/library/bagisto",
+            timeout=10,
+            capture_output=True,
+        )
+    except Exception:
+        pass
+
+    # Ensure cache directories exist (artisan can delete them)
+    for d in BAGISTO_CACHE_DIRS:
+        try:
+            os.makedirs(d, exist_ok=True)
+            # www-data needs write access
+            os.chmod(d, 0o775)
+        except Exception:
+            pass
 
 
 def _call_revalidation_api(topic="products/update"):
