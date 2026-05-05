@@ -45,14 +45,8 @@ def _do_push_category(item_group_name):
         if ig.image:
             logo_path = _download_category_image(ig.name, ig.image)
 
-        # Determine storefront visibility: only active if explicitly enabled
-        # or if the group has published Website Items assigned to it
-        has_products = frappe.db.count(
-            "Website Item",
-            filters={"item_group": ig.name, "published": 1}
-        )
-        is_visible = ig.show_in_website or has_products > 0
-        status = 1 if is_visible else 0
+        # Synced categories are always enabled — admin can disable in Bagisto
+        status = 1
 
         category_id = client.upsert_category(
             name=ig.item_group_name,
