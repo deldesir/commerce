@@ -26,13 +26,26 @@ def _do_push_stock(item_code):
     """Background job: push current stock for an item to Bagisto."""
     try:
         # Get actual qty from ERPNext Bin (aggregated across warehouses)
-        total_qty = frappe.db.sql("""
+        result = frappe.db.sql("""
             SELECT COALESCE(SUM(actual_qty), 0)
             FROM `tabBin`
             WHERE item_code = %s
-        """, item_code)[0][0]
+        """, item_code)
+        total_qty = int(result[0][0]) if result else 0
 
-        total_qty = max(0, int(total_qty))  # No negative stock in Bagisto
+        # Check if the item has ANY stock entries at all
+        has_stock_entries = frappe.db.sql(
+            "SELECT 1 FROM `tabBin` WHERE item_code = %s LIMIT 1",
+            item_code
+        )
+
+        if not has_stock_entries:
+            # No stock tracking configured — default to available (999)
+            # so storefronts don't show "Out of Stock" for new items.
+            # Once the user makes a stock entry, real qty takes over.
+            total_qty = 999
+        else:
+            total_qty = max(0, total_qty)  # No negative stock in Bagisto
 
         existing = client.find_product_by_sku(item_code)
         if not existing:
